@@ -3,7 +3,7 @@
 #include <math.h>
 #include <cuda_runtime.h>
 #include <openssl/md5.h>
-#include "d_radix.h"
+#include "d_hybrid_sort.h"
 #include "CHECK.h"
 #include "config.h"
 #include "wrappers.h"

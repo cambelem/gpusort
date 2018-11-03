@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <openssl/md5.h>
 #include "wrappers.h"
-#include "d_radix.h"
+#include "d_hybrid_sort.h"
 #include "config.h"
 
 void parseCommandArgs(int argc, char * argv[], unsigned char ** password,
@@ -45,7 +45,7 @@ int main(int argc, char * argv[]) {
     free(hash);
     */
 
-    parseCommandArgs(argc, argv, &password, &length);
+    // parseCommandArgs(argc, argv, &password, &length);
     return EXIT_SUCCESS;
 }
 
