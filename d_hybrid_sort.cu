@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <iostream>
+#include <iomanip>
 #include <stdlib.h>
 #include <math.h>
 #include <cuda_runtime.h>
@@ -7,6 +9,14 @@
 #include "CHECK.h"
 #include "config.h"
 #include "wrappers.h"
+
+#define NUMBER_OF_PROCESSORS 1024
+#define BLOCK_DIM 256
+
+//prototype for pivot counting kernal
+__global__ void d_count_kernel(unsigned int * d_pivots,
+  unsigned int * r_buckets, int pivotsLength, unsigned int * r_indices,
+  unsigned int * r_sublist, unsigned int * d_in, int itemCount);
 
 //prototype for the kernel
 __global__ void d_sort_kernel();
@@ -20,7 +30,7 @@ __global__ void d_sort_kernel();
 *   hashLen - the length of the hash
 *   outpass - the result password to return
 */
-float d_sort() {
+float d_sort(unsigned int * in, unsigned int length) {
 
     cudaEvent_t start_cpu, stop_cpu;
     float cpuMsecTime = -1;
@@ -31,6 +41,76 @@ float d_sort() {
     CHECK(cudaEventCreate(&stop_cpu));
     //record the starting time
     CHECK(cudaEventRecord(start_cpu));
+
+    //Find min and max
+    unsigned int max = 0;
+    unsigned int min = UINT_MAX;
+    for (unsigned int i = 0; i < length; i++) {
+      if (in[i] < min) {
+        min = in[i];
+      }
+      if (in[i] > max) {
+        max = in[i];
+      }
+    }
+
+    //Compute pivots through linear interpolation
+    unsigned int pivotsLength = (NUMBER_OF_PROCESSORS * 2) - 1;
+    unsigned int * pivots = new unsigned int[pivotsLength];
+    unsigned int * buckets_count = new unsigned int[pivotsLength];
+    int slope = (max - min)/pivotsLength;
+    for (unsigned int i = 0; i < pivotsLength; i++) {
+      pivots[i] = (slope * i);
+      buckets_count[i] = 0;
+    }
+
+    //Launch a kernal to count the number of items in each bucket so we can
+    //refine our pivots later.
+    unsigned int * d_pivots;
+    CHECK(cudaMalloc((void**)&d_pivots, pivotsLength * sizeof(unsigned int)));
+    unsigned int * r_buckets;
+    CHECK(cudaMalloc((void**)&r_buckets, pivotsLength * sizeof(unsigned int)));
+    unsigned int * d_in;
+    CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
+    unsigned int * r_indices;
+    CHECK(cudaMalloc((void**)&r_indices, length * sizeof(unsigned int)));
+    unsigned int * r_sublist;
+    CHECK(cudaMalloc((void**)&r_sublist,
+      (pivotsLength + 1) * sizeof(unsigned int)));
+
+    CHECK(cudaMemcpy(d_pivots, pivots,
+      pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_in, in,
+      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(r_buckets, buckets_count,
+      pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    dim3 block(BLOCKDIM, 1, 1);
+    dim3 grid(ceil((float) length/BLOCKDIM), 1, 1);
+
+    d_count_kernel<<<grid, block>>>(d_pivots, r_buckets, pivotsLength,
+      r_indices, r_sublist, d_in, length);
+
+    CHECK(cudaDeviceSynchronize());
+
+    unsigned int * buckets = (unsigned int *) Malloc(pivotsLength * sizeof(unsigned int));
+    CHECK(cudaMemcpy(buckets, r_buckets, pivotsLength * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    for (int i = 0; i < pivotsLength; i++) {
+      if (i % 10 == 0) {
+        std::cout << std::endl;
+      }
+      std::cout << std::setw(8) << buckets[i] << ", ";
+    }
+    std::cout << std::endl;
+
+    CHECK(cudaFree(d_pivots));
+    CHECK(cudaFree(r_buckets));
+    CHECK(cudaFree(r_indices));
+    CHECK(cudaFree(r_sublist));
+    CHECK(cudaFree(d_in));
+    free(buckets);
+    free(pivots);
 
     // unsigned long size = 2 * NUMCHARS * sizeof(unsigned char);
     // unsigned long outsize = pow(NUMCHARS, 2) * 3;
@@ -69,6 +149,26 @@ float d_sort() {
     //calculate the elapsed time between the two events
     CHECK(cudaEventElapsedTime(&cpuMsecTime, start_cpu, stop_cpu));
     return cpuMsecTime;
+}
+
+__global__ void d_count_kernel(unsigned int * d_pivots,
+  unsigned int * r_buckets, int pivotsLength, unsigned int * r_indices,
+  unsigned int * r_sublist, unsigned int * d_in, int itemCount) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < itemCount) {
+      unsigned int element = d_in[idx];
+      unsigned int index = pivotsLength/2 - 1;
+      unsigned int jump = pivotsLength/4;
+      int pivot = d_pivots[index];
+      while(jump >= 1) {
+        index = (element < pivot) ? (index - jump) : (index + jump);
+        pivot = d_pivots[index];
+        jump /= 2;
+      }
+      index = (element < pivot) ? index : index + 1;
+      r_sublist[idx] = index;
+      r_indices[idx] = atomicAdd(&r_buckets[index], 1);
+    }
 }
 
 /*d_generate_kernel

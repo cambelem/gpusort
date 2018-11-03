@@ -23,6 +23,28 @@ void printUsage();
 *              from code and teaching by Dr. Cindy Norris <@cindyanorris>
 */
 int main(int argc, char * argv[]) {
+
+    srand(1);
+
+    for (int i = 27; i < 28; i++) {
+      unsigned int num_elems = (1 << i);
+      unsigned int* h_in = new unsigned int[num_elems];
+      unsigned int* h_in_rand = new unsigned int[num_elems];
+
+      for (unsigned int j = 0; j < num_elems; j++) {
+        h_in[j] = (num_elems - 1) - j;
+        h_in_rand[j] = rand() % num_elems;
+      }
+
+      //TODO: Change to loop 5 times!  
+      for (unsigned int j = 0; j < 1; j++) {
+        d_sort(h_in_rand, num_elems);
+      }
+
+      delete[] h_in;
+      delete[] h_in_rand;
+    }
+
     /*
     unsigned char * password, * outpass, * hash;
     unsigned long length;
