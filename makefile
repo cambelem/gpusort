@@ -5,21 +5,21 @@ CC_FLAGS = -c
 #NVCCFLAGS = -m64 -O3 -Xptxas -v
 #uncomment NVCCFLAGS below and comment out above, if you want to use cuda-gdb
 NVCCFLAGS = -g -G -m64 --compiler-options -Wall -O3
-OBJS = cuda_radix.o wrappers.o d_radix.o
+OBJS = hybrid_sort.o wrappers.o d_hybrid_sort.o
 .SUFFIXES: .cu .o .h
 .cu.o:
 	$(NVCC) $(CC_FLAGS) $(NVCCFLAGS) $(GENCODE_FLAGS) -lcrypto $< -o $@
 
-all: cuda_radix
+all: hybrid_sort
 
-cuda_radix: $(OBJS)
-	$(CC) $(OBJS) -L/usr/local/cuda/lib64 -lcuda -lcudart -lcrypto -o cuda_radix
+hybrid_sort: $(OBJS)
+	$(CC) $(OBJS) -L/usr/local/cuda/lib64 -lcuda -lcudart -lcrypto -o hybrid_sort
 
-cuda_radix.o: cuda_radix.cu wrappers.h d_radix.h
+hybrid_sort.o: hybrid_sort.cu wrappers.h d_hybrid_sort.h
 
-d_radix.o: d_radix.cu d_radix.h CHECK.h
+d_hybrid_sort.o: d_hybrid_sort.cu d_hybrid_sort.h CHECK.h
 
 wrappers.o: wrappers.cu wrappers.h
 
 clean:
-	rm cuda_radix *.o
+	rm hybrid_sort *.o
