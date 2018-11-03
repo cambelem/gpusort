@@ -44,7 +44,7 @@ int main(int argc, char * argv[]) {
     free(outpass);
     free(hash);
     */
-    
+
     parseCommandArgs(argc, argv, &password, &length);
     return EXIT_SUCCESS;
 }
