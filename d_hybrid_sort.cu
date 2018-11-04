@@ -18,6 +18,11 @@ __global__ void d_count_kernel(unsigned int * d_pivots,
   unsigned int * r_buckets, int pivotsLength, unsigned int * r_indices,
   unsigned int * r_sublist, unsigned int * d_in, int itemCount);
 
+//prototype for bucketsort
+__global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
+    unsigned int * d_sublist, unsigned int * r_outputlist,
+    unsigned int * d_bucketoffsets, int itemCount);
+
 //prototype for the kernel
 __global__ void d_sort_kernel();
 
@@ -64,8 +69,11 @@ float d_sort(unsigned int * in, unsigned int length) {
       buckets_count[i] = 0;
     }
 
+    /****************************STEP 1****************************************/
     //Launch a kernal to count the number of items in each bucket so we can
     //refine our pivots later.
+
+    //Input/output mallocs
     unsigned int * d_pivots;
     CHECK(cudaMalloc((void**)&d_pivots, pivotsLength * sizeof(unsigned int)));
     unsigned int * r_buckets;
@@ -78,6 +86,7 @@ float d_sort(unsigned int * in, unsigned int length) {
     CHECK(cudaMalloc((void**)&r_sublist,
       (pivotsLength + 1) * sizeof(unsigned int)));
 
+    //Copying things to memory
     CHECK(cudaMemcpy(d_pivots, pivots,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_in, in,
@@ -85,9 +94,11 @@ float d_sort(unsigned int * in, unsigned int length) {
     CHECK(cudaMemcpy(r_buckets, buckets_count,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
 
+    //kernel dimensions
     dim3 block(BLOCKDIM, 1, 1);
     dim3 grid(ceil((float) length/BLOCKDIM), 1, 1);
 
+    //Launching kernel
     d_count_kernel<<<grid, block>>>(d_pivots, r_buckets, pivotsLength,
       r_indices, r_sublist, d_in, length);
 
@@ -95,22 +106,224 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     unsigned int * buckets = (unsigned int *) Malloc(pivotsLength * sizeof(unsigned int));
     CHECK(cudaMemcpy(buckets, r_buckets, pivotsLength * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-
-    for (int i = 0; i < pivotsLength; i++) {
-      if (i % 10 == 0) {
-        std::cout << std::endl;
-      }
-      std::cout << std::setw(8) << buckets[i] << ", ";
-    }
-    std::cout << std::endl;
+    unsigned int * indices = (unsigned int *) Malloc(length * sizeof(unsigned int));
+    CHECK(cudaMemcpy(indices, r_indices, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+    unsigned int * sublist = (unsigned int *) Malloc(length * sizeof(unsigned int));
+    cudaMemcpy(sublist, r_sublist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost);
 
     CHECK(cudaFree(d_pivots));
     CHECK(cudaFree(r_buckets));
     CHECK(cudaFree(r_indices));
     CHECK(cudaFree(r_sublist));
     CHECK(cudaFree(d_in));
-    free(buckets);
+
+    // unsigned int sum = 0;
+    // for (unsigned int i = 0; i < pivotsLength; i++) {
+    //   if (i % 10 == 0) {
+    //     std::cout << std::endl;
+    //   }
+    //   std::cout << std::setw(8) << buckets[i] << ", ";
+    //   sum += buckets[i];
+    // }
+    // std::cout << std::endl;
+    //
+    // std::cout << std::endl << sum << " == " << length << std::endl;
+
+    /***************************STEP 1 COMPLETE********************************/
+
+    // std::cout << std::endl;
+    //
+    // std::cout << "Before" << std::endl;
+    // for (unsigned int i = 0; i < 20; i++) {
+    //   std::cout << pivots[i] << std::endl;
+    // }
+
+    /***************************STEP 2*****************************************/
+    // buckets is our count per bucket
+    // indices is, for each item, the count of the bucket it was placed in, before it was placed there.
+    // sublist is the bucket in which a given item was placed.
+    unsigned int N = length;
+    unsigned int L = NUMBER_OF_PROCESSORS * 2;
+    unsigned int elemsneeded = N/L;
+
+    for (unsigned int i = 0; i < L - 1; i++) {
+      int range = pivots[i + 1] - pivots[i];
+      while (buckets[i] >= elemsneeded) {
+        pivots[i + 1] += (elemsneeded/buckets[i]) * range;
+        elemsneeded = N/L;
+        buckets[i] -= elemsneeded;
+      }
+      elemsneeded -= buckets[i];
+      pivots[i + 1] += range / 2;
+    }
+    /*****************************STEP 2 COMPLETE******************************/
+
+    // std::cout << "After" << std::endl;
+    // for (unsigned int i = 0; i < 20; i++) {
+    //   std::cout << pivots[i] << std::endl;
+    // }
+    //
+    // int count = 0;
+    // for (int i = 0; i < length; i++) {
+    //   if (in[i] >= pivots[8] && in[i] <= pivots[9]) {
+    //     count++;
+    //   }
+    // }
+    // std::cout << "CPU Count: " << count << std::endl;
+
+    /****************************STEP 3****************************************/
+    //Launch a kernal to count the number of items in each bucket after
+    //redefining pivots!
+
+    //Copying things to memory
+    //Input/output mallocs
+    CHECK(cudaMalloc((void**)&d_pivots, pivotsLength * sizeof(unsigned int)));
+    CHECK(cudaMalloc((void**)&r_buckets, pivotsLength * sizeof(unsigned int)));
+    CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
+    CHECK(cudaMalloc((void**)&r_indices, length * sizeof(unsigned int)));
+    CHECK(cudaMalloc((void**)&r_sublist,
+      (pivotsLength + 1) * sizeof(unsigned int)));
+
+    //Copying things to memory
+    CHECK(cudaMemcpy(d_pivots, pivots,
+      pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_in, in,
+      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(r_buckets, buckets_count,
+      pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    //Launching kernel
+    d_count_kernel<<<grid, block>>>(d_pivots, r_buckets, pivotsLength,
+      r_indices, r_sublist, d_in, length);
+
+    CHECK(cudaDeviceSynchronize());
+
+    CHECK(cudaMemcpy(buckets, r_buckets, pivotsLength * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(indices, r_indices, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+    cudaMemcpy(sublist, r_sublist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+
+    CHECK(cudaFree(d_pivots));
+    CHECK(cudaFree(r_buckets));
+    CHECK(cudaFree(r_indices));
+    CHECK(cudaFree(r_sublist));
+    CHECK(cudaFree(d_in));
+
+    min = UINT_MAX;
+    int min_index = 0;
+    for (int i = 0; i < length; i++) {
+      if (in[i] < min) {
+        min = in[i];
+        min_index = i;
+      }
+    }
+    std::cout << min << " at index " << min_index << std::endl;
+    std::cout << "pivot index = " << sublist[min_index] << std::endl;
+    std::cout << "pivot value = " << pivots[sublist[min_index]] << std::endl;
+    std::cout << "pivot index = " << indices[min_index] << std::endl;
+
     free(pivots);
+
+    // int sum = 0;
+    // for (unsigned int i = 0; i < pivotsLength; i++) {
+    //   if (i % 10 == 0) {
+    //     std::cout << std::endl;
+    //   }
+    //   std::cout << std::setw(8) << buckets[i] << ", ";
+    //   sum += buckets[i];
+    // }
+    // std::cout << std::endl;
+    //
+    // std::cout << std::endl << sum << " == " << length << std::endl;
+
+    /***************************STEP 3 COMPLETE********************************/
+
+    //Calculate prefix sums for buckets to find the starting index of each
+    //bucket in our final bucketsorted array.
+    unsigned int * prefix_buckets = (unsigned int *) Malloc(pivotsLength * sizeof(unsigned int));
+    prefix_buckets[0] = buckets[0];
+    for (unsigned int i = 1; i < pivotsLength; i++) {
+      prefix_buckets[i] = prefix_buckets[i - 1] + buckets[i - 1];
+    }
+
+    // for (unsigned int i = 0; i < 30; i++) {
+    //   if (i % 10 == 0) {
+    //     std::cout << std::endl;
+    //   }
+    //   std::cout << std::setw(8) << buckets[i] << ", ";
+    // }
+    // std::cout << std::endl;
+    //
+    // for (unsigned int i = 0; i < 30; i++) {
+    //   if (i % 10 == 0) {
+    //     std::cout << std::endl;
+    //   }
+    //   std::cout << std::setw(8) << prefix_buckets[i] << ", ";
+    // }
+    // std::cout << std::endl;
+
+    /***********************STEP 4: BUCKETSORT*********************************/
+
+    CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
+    unsigned int * d_indices;
+    CHECK(cudaMalloc((void**)&d_indices, length * sizeof(unsigned int)));
+    unsigned int * d_sublist;
+    CHECK(cudaMalloc((void**)&d_sublist, length * sizeof(unsigned int)));
+    unsigned int * r_outputlist;
+    CHECK(cudaMalloc((void**)&r_outputlist, length * sizeof(unsigned int)));
+    unsigned int * d_bucketoffsets;
+    CHECK(cudaMalloc((void**)&d_bucketoffsets, pivotsLength * sizeof(unsigned int)));
+
+    CHECK(cudaMemcpy(d_in, in,
+      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_indices, indices, length * sizeof(unsigned int),
+            cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_sublist, sublist, length * sizeof(unsigned int),
+            cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_bucketoffsets, prefix_buckets,
+      pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    d_bucketsort<<<grid, block>>>(d_in, d_indices, d_sublist,
+      r_outputlist, d_bucketoffsets, length);
+
+    CHECK(cudaDeviceSynchronize());
+
+    unsigned int * outputlist = (unsigned int *) Malloc(length * sizeof(unsigned int));
+    CHECK(cudaMemcpy(outputlist, r_outputlist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    max = 0;
+    for (unsigned int i = prefix_buckets[8]; i < prefix_buckets[10]; i++) {
+      if (outputlist[i] > max) {
+        max = outputlist[i];
+      }
+      // if (i % 10 == 0) {
+      //   std::cout << std::endl;
+      // }
+      // std::cout << std::setw(8) << outputlist[i] << ", ";
+    }
+
+    min = UINT_MAX;
+    for (unsigned int i = prefix_buckets[10]; i < prefix_buckets[15]; i++) {
+      if (outputlist[i] < min) {
+        min = outputlist[i];
+      }
+    }
+
+    //TODO: Buckets are not working properly.  Elements are not mapping to the
+    //correct bucket, nor are they ending up in the right index.  
+
+    std::cout << max << " < " << min << std::endl;
+    std::cout << std::endl;
+
+    CHECK(cudaFree(d_in));
+    CHECK(cudaFree(d_indices));
+    CHECK(cudaFree(d_sublist));
+    CHECK(cudaFree(r_outputlist));
+    CHECK(cudaFree(d_bucketoffsets));
+    free(outputlist);
+
+    free(buckets);
+    free(indices);
+    free(sublist);
 
     // unsigned long size = 2 * NUMCHARS * sizeof(unsigned char);
     // unsigned long outsize = pow(NUMCHARS, 2) * 3;
@@ -169,6 +382,16 @@ __global__ void d_count_kernel(unsigned int * d_pivots,
       r_sublist[idx] = index;
       r_indices[idx] = atomicAdd(&r_buckets[index], 1);
     }
+}
+
+__global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
+    unsigned int * d_sublist, unsigned int * r_outputlist,
+    unsigned int * d_bucketoffsets, int itemCount) {
+      int idx = blockIdx.x * blockDim.x + threadIdx.x;
+      if (idx < itemCount) {
+        int newpos = d_bucketoffsets[d_sublist[idx]] + d_indices[idx];
+        r_outputlist[newpos] = d_in[idx];
+      }
 }
 
 /*d_generate_kernel
