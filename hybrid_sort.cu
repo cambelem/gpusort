@@ -26,7 +26,7 @@ int main(int argc, char * argv[]) {
 
     srand(1);
 
-    for (int i = 12; i < 13; i++) {
+    for (int i = 17; i < 18; i++) {
       unsigned int num_elems = (1 << i);
       unsigned int* h_in = new unsigned int[num_elems];
       unsigned int* h_in_rand = new unsigned int[num_elems];

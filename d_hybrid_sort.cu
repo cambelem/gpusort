@@ -23,8 +23,16 @@ __global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
     unsigned int * d_sublist, unsigned int * r_outputlist,
     unsigned int * d_bucketoffsets, int itemCount);
 
-//prototype for the kernel
-__global__ void d_sort_kernel();
+//prototype for the sequential version of mergesort.  This is basically a
+//sequential n^2 mergesort that is used when there are too few buckets remaining
+//in order to wrap everything up in as few inefficient steps as possible.
+__device__ void d_sequential_mergesort(unsigned int * d_in,
+  unsigned int * r_output, unsigned int startIndex, int endIndex);
+
+//prototype for the sorting kernel that will control what mergesort to call.
+__global__ void d_sort_kernel(unsigned int * d_in,
+  unsigned int * d_bucketoffsets, unsigned int * r_outputlist, int itemCount,
+  int bucketsCount);
 
 /*d_crack
 *
@@ -130,8 +138,17 @@ float d_sort(unsigned int * in, unsigned int length) {
     // std::cout << count << std::endl;
 
     // for (unsigned int i = 0; i < pivotsLength; i++) {
-    //   std::cout << buckets[i] << std::endl;
+    //   std::cout << pivots[i] << std::endl;
+    //
+
+    // int count = 0;
+    // for (int i = 0; i < length; i++) {
+    //   if (in[i] >= pivots[8] && in[i] < pivots[9]) {
+    //     count++;
+    //   }
     // }
+    // std::cout << "CPU Count: " << count << std::endl;
+    // std::cout << "GPU Count: " << buckets[9] << std::endl;
 
     /***************************STEP 2*****************************************/
     // buckets is our count per bucket
@@ -141,7 +158,7 @@ float d_sort(unsigned int * in, unsigned int length) {
     unsigned int L = NUMBER_OF_PROCESSORS * 2;
     int elemsneeded = ceil((float) N/L);
 
-    for (unsigned int i = 0; i < 10; i++) {
+    for (unsigned int i = 0; i < pivotsLength; i++) {
       int range = pivots[i + 1] - pivots[i];
       int j = 0;
       while (buckets[i] >= elemsneeded) {
@@ -155,19 +172,20 @@ float d_sort(unsigned int * in, unsigned int length) {
     }
 
     // /*****************************STEP 2 COMPLETE******************************/
-    //
-    // // std::cout << "After" << std::endl;
-    // // for (unsigned int i = 0; i < 20; i++) {
-    // //   std::cout << pivots[i] << std::endl;
+
+    // std::cout << "After" << std::endl;
+    // for (unsigned int i = 0; i < 20; i++) {
+    //   std::cout << pivots[i] << std::endl;
+    // }
+
+    // int count = 0;
+    // for (int i = 0; i < length; i++) {
+    //   if (in[i] >= pivots[8] && in[i] <= pivots[9]) {
+    //     count++;
+    //   }
     // // }
-    // //
-    // // int count = 0;
-    // // for (int i = 0; i < length; i++) {
-    // //   if (in[i] >= pivots[8] && in[i] <= pivots[9]) {
-    // //     count++;
-    // //   }
-    // // }
-    // // std::cout << "CPU Count: " << count << std::endl;
+    // std::cout << "CPU Count: " << count << std::endl;
+    // std::cout << "GPU Count: " << buckets[9] << std:endl;
     //
     // /****************************STEP 3****************************************/
     //Launch a kernal to count the number of items in each bucket after
@@ -221,7 +239,7 @@ float d_sort(unsigned int * in, unsigned int length) {
       prefix_buckets[i] = prefix_buckets[i - 1] + buckets[i - 1];
     }
 
-    // for (unsigned int i = 0; i < 30; i++) {
+    // for (unsigned int i = 0; i < 2048; i++) {
     //   if (i % 10 == 0) {
     //     std::cout << std::endl;
     //   }
@@ -237,7 +255,7 @@ float d_sort(unsigned int * in, unsigned int length) {
     // }
     // std::cout << std::endl;
 
-    // /***********************STEP 4: BUCKETSORT*********************************/
+    /***********************STEP 4: BUCKETSORT*********************************/
 
     CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
     unsigned int * d_indices;
@@ -271,8 +289,57 @@ float d_sort(unsigned int * in, unsigned int length) {
     CHECK(cudaFree(d_sublist));
     CHECK(cudaFree(r_outputlist));
     CHECK(cudaFree(d_bucketoffsets));
-    free(outputlist);
 
+    /***********************STEP 4 COMPLETE************************************/
+
+    unsigned int lower = 0;
+    for (unsigned int i = 0; i < pivotsLength - 1; i++) {
+      unsigned int max = 0;
+      for (unsigned int j = lower; j < prefix_buckets[i]; j++) {
+        if (outputlist[j] > max) {
+          max = outputlist[j];
+        }
+      }
+      unsigned int min = UINT_MAX;
+      for (unsigned int j = prefix_buckets[i]; j < prefix_buckets[i + 1]; j++) {
+        if (outputlist[j] < min) {
+          min = outputlist[j];
+        }
+      }
+      // printf("MAX: %u, MIN: %u, %u < %u\n", max, min, max, min);
+      lower = prefix_buckets[i];
+    }
+
+
+    /*************************STEP 5: MERGESORT********************************/
+
+    CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
+    CHECK(cudaMalloc((void**)&r_outputlist, length * sizeof(unsigned int)));
+    CHECK(cudaMalloc((void**)&d_bucketoffsets, pivotsLength * sizeof(unsigned int)));
+
+    CHECK(cudaMemcpy(d_in, outputlist,
+      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_bucketoffsets, prefix_buckets,
+      pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+    d_sort_kernel<<<grid, block>>>(d_in, d_bucketoffsets, r_outputlist, length,
+      pivotsLength + 1);
+
+    CHECK(cudaDeviceSynchronize());
+
+    CHECK(cudaMemcpy(outputlist, r_outputlist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    CHECK(cudaFree(d_in));
+    CHECK(cudaFree(r_outputlist));
+    CHECK(cudaFree(d_bucketoffsets));
+
+    /*************************STEP 5 COMPLETE**********************************/
+
+    for (unsigned int i = 0; i < length; i++) {
+      std::cout << outputlist[i] << std::endl;
+    }
+
+    free(outputlist);
     free(buckets);
     free(indices);
     free(sublist);
@@ -334,7 +401,7 @@ __global__ void d_count_kernel(unsigned int * d_pivots,
       index = (element < pivot) ? index : index + 1;
       r_sublist[idx] = index;
       r_indices[idx] = atomicAdd(&r_buckets[index], 1);
-      // printf("idx: %d, element: %d, r_sublist[idx]: %d, r_indices[idx]: %d, pivot: %d\n", idx, element, r_sublist[idx], r_indices[idx], pivot);
+      // printf("idx: %d, element: %d, r_sublist[idx]: %d, r_indices[idx]: %d, pivot: %d\n", idx, element, r_sublist[idx], r_indices[idx], d_pivots[index]);
     }
 }
 
@@ -348,18 +415,42 @@ __global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
       }
 }
 
-/*d_generate_kernel
+__device__ void d_sequential_mergesort(unsigned int * d_in,
+  unsigned int * r_output, unsigned int startIndex, int endIndex) {
+  for (unsigned int i = startIndex; i < endIndex; i++) {
+    unsigned min = UINT_MAX;
+    unsigned min_index = UINT_MAX;
+    for (int j = startIndex; j < endIndex; j++) {
+      if (d_in[j] < min) {
+        min = d_in[j];
+        min_index = j;
+      }
+    }
+    r_output[i] = min;
+    d_in[min_index] = UINT_MAX;
+  }
+}
+
+/*d_sort_kernel
 *  Kernal code executed by each thread to generate a list of all possible
 *  passwords of length n + 1.  To do this, each thread will work on one element
 *  in passwords and append all characters in VALID_CHARS to it. This kernal
 *  works in place, so it will alter the input array.
 *
 *  @params:
-*   passwords - array filled with current passwords to build off of.
-*   length    - length of the given passwords
-*   n         - number of items currently in passwords array
-*   d_result  - location to place newly generated passwords.
+*   d_in - input array
+*   d_bucketoffsets - the offsets for the beginning of each bucket in d_in.
+*   r_outputlist - a place to store the output elements because mergesort isn't
+*       in place in this implementation.
+*   itemCount - the length of d_in and r_outputlist
+*   bucketsCount - the length of d_bucketoffsets which is also the number of
+*       buckets for our data.
 */
-__global__ void d_sort_kernel() {
-  // unsigned long index = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void d_sort_kernel(unsigned int * d_in,
+  unsigned int * d_bucketoffsets, unsigned int * r_outputlist, int itemCount,
+  int bucketsCount) {
+  unsigned long index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < bucketsCount - 1) {
+    d_sequential_mergesort(d_in, r_outputlist, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
+  }
 }
