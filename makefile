@@ -1,7 +1,7 @@
 NVCC = /usr/local/cuda-8.0/bin/nvcc
 CC = g++
 GENCODE_FLAGS = -arch=sm_30
-CC_FLAGS = -c
+CC_FLAGS = -c -std=c++11
 #NVCCFLAGS = -m64 -O3 -Xptxas -v
 #uncomment NVCCFLAGS below and comment out above, if you want to use cuda-gdb
 NVCCFLAGS = -g -G -m64 --compiler-options -Wall -O3
