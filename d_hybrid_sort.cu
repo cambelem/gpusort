@@ -254,6 +254,8 @@ float d_sort(unsigned int * in, unsigned int length) {
     //Copying data to the GPU memory
     CHECK(cudaMemcpy(d_in, outputlist,
       length * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(r_outputlist, outputlist,
+      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_bucketoffsets, prefix_buckets,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
 
@@ -474,8 +476,8 @@ __global__ void d_sort_kernel(unsigned int * d_in,
   int bucketsCount) {
   unsigned int index = blockIdx.x * blockDim.x + threadIdx.x;
 
-  if (index < bucketsCount - 1) {
+  if (index < bucketsCount) {
     // d_sequential_mergesort(d_in, r_outputlist, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
-    d_mergesort(d_in, r_outputlist, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
+    d_mergesort(r_outputlist, d_in, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
   }
 }
