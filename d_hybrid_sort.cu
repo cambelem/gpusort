@@ -14,7 +14,7 @@
 #include <array>
 
 #define NUMBER_OF_PROCESSORS 1024
-#define BLOCK_DIM 1024
+#define BLOCK_DIM 256
 
 //prototype for pivot counting kernal
 __global__ void d_count_kernel(unsigned int * d_pivots,
@@ -137,7 +137,7 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /***************************STEP 1 COMPLETE********************************/
 
-    std::cout << "Step 1 Complete\n";
+    std::cout << "Counting with Original Pivots Complete\n";
 
     /*********************STEP 2: Refining Pivots******************************/
     //Refine our pivots using the algorithm suggested by Sintorn and Assarsson,
@@ -150,7 +150,7 @@ float d_sort(unsigned int * in, unsigned int length) {
     unsigned int L = NUMBER_OF_PROCESSORS * 2;
     int elemsneeded = ceil((float) N/L);
 
-    for (unsigned int i = 0; i < pivotsLength; i++) {
+    for (unsigned int i = 0; i < pivotsLength - 1; i++) {
       int range = pivots[i + 1] - pivots[i];
       while (buckets[i] >= elemsneeded) {
         pivots[i + 1] += (elemsneeded/buckets[i]) * range;
@@ -164,7 +164,7 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /*****************************STEP 2 COMPLETE******************************/
 
-    std::cout << "Step 2 Complete\n";
+    std::cout << "Done Refining Pivots\n";
 
     /***************STEP 3: Counting After Refining Pivots*********************/
     //Launch a kernal to count the number of items in each bucket after
@@ -197,7 +197,7 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /***************************STEP 3 COMPLETE********************************/
 
-    std::cout << "Step 3 Complete\n";
+    std::cout << "Counting with Refined Pivots Complete\n";
 
     //Calculate prefix sums for buckets to find the starting index of each
     //bucket in our final bucketsorted array.
@@ -241,7 +241,7 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /***********************STEP 4 COMPLETE************************************/
 
-    std::cout << "Step 4 Complete\n";
+    std::cout << "Done Bucketsorting\n";
 
     /*************************STEP 5: MERGESORT********************************/
     //Mergesort the bucketsorted output from step 4.
@@ -259,9 +259,14 @@ float d_sort(unsigned int * in, unsigned int length) {
     CHECK(cudaMemcpy(d_bucketoffsets, prefix_buckets,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
 
+
+    //printf("%d\n", pivotsLength);
+
+    dim3 gridPivotsLength(ceil((float) pivotsLength/BLOCKDIM), 1, 1);
+
     //Launch a kernel to sort the data.
-    d_sort_kernel<<<grid, block>>>(d_in, d_bucketoffsets, r_outputlist, length,
-      pivotsLength + 1);
+    d_sort_kernel<<<gridPivotsLength, block>>>(d_in, d_bucketoffsets, r_outputlist, length,
+      pivotsLength);
 
     //Wait for the kernel to finish
     CHECK(cudaDeviceSynchronize());
@@ -275,19 +280,20 @@ float d_sort(unsigned int * in, unsigned int length) {
     CHECK(cudaFree(d_bucketoffsets));
     //Free up any system memory we don't need anymore.
     free(buckets);
-    free(pivots);
+    delete[] pivots;
+    delete[] buckets_count;
 
 
     /*************************STEP 5 COMPLETE**********************************/
 
-    std::cout << "Step 5 Complete\n";
+    std::cout << "Finished Sorting\n";
 
     /*Full output is now in outputlist.  You can print it with by uncommenting
     * the following few lines!
     */
-    for (unsigned int i = 0; i < length; i++) {
-      std::cout << outputlist[i] << std::endl;
-    }
+    // for (unsigned int i = 0; i < length; i++) {
+    //   std::cout << outputlist[i] << std::endl;
+    // }
 
     //Free the output list once we're done.
     free(outputlist);
@@ -375,10 +381,7 @@ __global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
 
 /*d_sequential_mergesort
 *
-* A kernel to execute a basic n^2 sort on a GPU core.  NOT USED.  Originally,
-*   This would've been part of Sintorn and Assarsson's sorting routine, but
-*   due to significant omissions of detail in their algorithmic description,
-*   we just implemented a standard mergesort.
+* A kernel to execute a basic n^2 sort on a GPU core.
 *
 * @params:
 *   d_in        - the input data
@@ -409,6 +412,16 @@ __device__ void d_sequential_mergesort(unsigned int * d_in,
 *
 * A traditional merge routine to be executed on the GPU as part of mergesort.
 *
+* NOT USED.  Originally we wanted to use a standard mergesort on the GPU,
+* and originally we thought it worked properly, but due to unpredictable thread
+* scheduling and possibly some memory access errors, we've had to disable this
+* code in the final demo.  That being said, if you wish to demo the running time
+* of a standard mergesort on the GPU, you can uncommend the call to d_mergesort
+* in d_sort_kernel and comment out the call to d_sequential_mergesort.  This
+* will not successfully sort the input data, but it will execute the same number
+* of operations that a working mergesort implementation would, thus its runtime
+* should be reflective of actual runtime.
+*
 * @params:
 *   data    - the input data
 *   working - working memory to complete the mergesort
@@ -422,9 +435,9 @@ __device__ void d_sequential_mergesort(unsigned int * d_in,
 __device__ void d_merge(unsigned int * data, unsigned int * working,
                         unsigned int start, unsigned int middle,
                         unsigned int end) {
-  int lower = start;
-  int upper = middle;
-  for (int i = start; i < end; i++) {
+  unsigned int lower = start;
+  unsigned int upper = middle;
+  for (unsigned int i = start; i <= end; i++) {
     if (working[lower] < working[upper]) {
       data[i] = working[lower];
       lower++;
@@ -439,6 +452,16 @@ __device__ void d_merge(unsigned int * data, unsigned int * working,
 /*d_mergesort
 *
 * A traditional mergesort routine to be executed on the GPU.
+*
+* NOT USED.  Originally we wanted to use a standard mergesort on the GPU,
+* and originally we thought it worked properly, but due to unpredictable thread
+* scheduling and possibly some memory access errors, we've had to disable this
+* code in the final demo.  That being said, if you wish to demo the running time
+* of a standard mergesort on the GPU, you can uncommend the call to d_mergesort
+* in d_sort_kernel and comment out the call to d_sequential_mergesort.  This
+* will not successfully sort the input data, but it will execute the same number
+* of operations that a working mergesort implementation would, thus its runtime
+* should be reflective of actual runtime.
 *
 * @params:
 *   input       - the input data
@@ -461,7 +484,7 @@ __device__ void d_mergesort(unsigned int * input, unsigned int * working,
 
 /*d_sort_kernel
 *  Our "driver" sorting kernel.  This allocates lists to different CUDA cores
-*   and launches a mergesort on each code.
+*   and launches a mergesort on each bucket.
 *
 *  @params:
 *   d_in - input array
@@ -477,7 +500,14 @@ __global__ void d_sort_kernel(unsigned int * d_in,
   unsigned int index = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (index < bucketsCount) {
-    // d_sequential_mergesort(d_in, r_outputlist, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
-    d_mergesort(r_outputlist, d_in, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
+    d_sequential_mergesort(d_in, r_outputlist, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
+
+    /*If you want to demo the traditional mergesort's performance, you can
+    * uncomment the following call to d_mergesort and comment out the
+    * d_sequential_mergesort call above.  This will not sort the data but it
+    * will do the same number of operations as a working mergesort would,
+    * so the performance is comparable.
+    */
+    // d_mergesort(r_outputlist, d_in, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
   }
 }
