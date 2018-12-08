@@ -10,7 +10,7 @@ We're using a makefile to build Hybrid Sort.  You'll need a device with a GPU th
 
 Usage:
 
-``hybrid_sort lower_bound upper_bound``
+``hybrid_sort [optional: -q for quiet] lower_bound upper_bound``
 
 In order to execute the Hybrid Sort routine, you need to execute the hybrid_sort executable built by our makefile and pass as input an upper and lower bound for the size of input to generate and sort.  The input upper and lower bounds are entered as powers of 2, so inputting 14 as a lower bound tells the application to sort 2^14 randomly generated input elements.  The application will randomly generate an input data set using rand().  If you called hybrid sort using `hybrid_sort 15 16`, the hybrid sort routine would randomly generate an input of size 2^15 and then call the sorting routine twice, keeping the result from the second run.  Then it would randomly generate an input of size 2^16 and repeat the sorting.  The application will output a string telling the input size and the number of milliseconds it took to sort the data.  
 
