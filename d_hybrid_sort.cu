@@ -9,6 +9,9 @@
 #include "CHECK.h"
 #include "config.h"
 #include "wrappers.h"
+#include <algorithm>
+#include <functional>
+#include <array>
 
 #define NUMBER_OF_PROCESSORS 1024
 #define BLOCK_DIM 256
@@ -26,22 +29,30 @@ __global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
 //prototype for the sequential version of mergesort.  This is basically a
 //sequential n^2 mergesort that is used when there are too few buckets remaining
 //in order to wrap everything up in as few inefficient steps as possible.
+//NOTE: We do not use this function, but we left it in because it still works,
+//      its just slower!
 __device__ void d_sequential_mergesort(unsigned int * d_in,
-  unsigned int * r_output, unsigned int startIndex, int endIndex);
+  unsigned int * r_output, unsigned int startIndex, unsigned int endIndex);
 
 //prototype for the sorting kernel that will control what mergesort to call.
 __global__ void d_sort_kernel(unsigned int * d_in,
   unsigned int * d_bucketoffsets, unsigned int * r_outputlist, int itemCount,
   int bucketsCount);
 
-/*d_crack
+__device__ void d_mergesort(unsigned int * input, unsigned int * working,
+                              unsigned int startIndex, unsigned int endIndex);
+
+__device__ void d_merge(unsigned int * data, unsigned int * working,
+                        unsigned int start, unsigned int middle,
+                        unsigned int end);
+
+/*d_sort
 *
-* Sets up and calls the kernal to brute-force a password hash.
+* Sets up and calls the kernal to sort input.
 *
 * @params
-*   hash    - the password hash to brute-force
-*   hashLen - the length of the hash
-*   outpass - the result password to return
+*   in     - the randomly generated input array
+*   length - the length of the input array
 */
 float d_sort(unsigned int * in, unsigned int length) {
 
@@ -55,7 +66,7 @@ float d_sort(unsigned int * in, unsigned int length) {
     //record the starting time
     CHECK(cudaEventRecord(start_cpu));
 
-    //Find min and max
+    //Find min and max of input data
     unsigned int max = 0;
     unsigned int min = UINT_MAX;
     for (unsigned int i = 0; i < length; i++) {
@@ -67,7 +78,8 @@ float d_sort(unsigned int * in, unsigned int length) {
       }
     }
 
-    //Compute pivots through linear interpolation
+    //Compute pivots through linear "interpolation".  Evenly spaced points
+    //between the smallest and largest input elements
     unsigned int pivotsLength = (NUMBER_OF_PROCESSORS * 2) - 1;
     unsigned int * pivots = new unsigned int[pivotsLength];
     int * buckets_count = new int[pivotsLength];
@@ -78,6 +90,7 @@ float d_sort(unsigned int * in, unsigned int length) {
       buckets_count[i] = 0;
       j += length/pivotsLength;
     }
+
 
     /****************************STEP 1****************************************/
     //Launch a kernal to count the number of items in each bucket so we can
@@ -93,10 +106,9 @@ float d_sort(unsigned int * in, unsigned int length) {
     unsigned int * r_indices;
     CHECK(cudaMalloc((void**)&r_indices, length * sizeof(unsigned int)));
     unsigned int * r_sublist;
-    CHECK(cudaMalloc((void**)&r_sublist,
-      (pivotsLength + 1) * sizeof(unsigned int)));
+    CHECK(cudaMalloc((void**)&r_sublist, length * sizeof(unsigned int)));
 
-    //Copying things to memory
+    //Copying data to GPU memory
     CHECK(cudaMemcpy(d_pivots, pivots,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_in, in,
@@ -112,45 +124,25 @@ float d_sort(unsigned int * in, unsigned int length) {
     d_count_kernel<<<grid, block>>>(d_pivots, r_buckets, pivotsLength,
       r_indices, r_sublist, d_in, length);
 
+    //Wait for the kernel to finish
     CHECK(cudaDeviceSynchronize());
 
     int * buckets = (int *) Malloc(pivotsLength * sizeof(int));
+    //Copy the bucket counts back off of the GPU
     CHECK(cudaMemcpy(buckets, r_buckets, pivotsLength * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-    unsigned int * indices = (unsigned int *) Malloc(length * sizeof(unsigned int));
-    CHECK(cudaMemcpy(indices, r_indices, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-    unsigned int * sublist = (unsigned int *) Malloc(length * sizeof(unsigned int));
-    cudaMemcpy(sublist, r_sublist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost);
 
-    CHECK(cudaFree(d_pivots));
-    CHECK(cudaFree(r_buckets));
+    //Free up unused space on the GPU
     CHECK(cudaFree(r_indices));
     CHECK(cudaFree(r_sublist));
-    CHECK(cudaFree(d_in));
 
     /***************************STEP 1 COMPLETE********************************/
 
-    // int count = 0;
-    // for (int i = 0; i < length; i++) {
-    //   if (in[i] == 2034) {
-    //     count++;
-    //   }
-    // }
-    // std::cout << count << std::endl;
+    std::cout << "Counting with Original Pivots Complete\n";
 
-    // for (unsigned int i = 0; i < pivotsLength; i++) {
-    //   std::cout << pivots[i] << std::endl;
-    //
+    /*********************STEP 2: Refining Pivots******************************/
+    //Refine our pivots using the algorithm suggested by Sintorn and Assarsson,
+    //Or at least our best interpretation of their pseudocode and description!
 
-    // int count = 0;
-    // for (int i = 0; i < length; i++) {
-    //   if (in[i] >= pivots[8] && in[i] < pivots[9]) {
-    //     count++;
-    //   }
-    // }
-    // std::cout << "CPU Count: " << count << std::endl;
-    // std::cout << "GPU Count: " << buckets[9] << std::endl;
-
-    /***************************STEP 2*****************************************/
     // buckets is our count per bucket
     // indices is, for each item, the count of the bucket it was placed in, before it was placed there.
     // sublist is the bucket in which a given item was placed.
@@ -158,52 +150,34 @@ float d_sort(unsigned int * in, unsigned int length) {
     unsigned int L = NUMBER_OF_PROCESSORS * 2;
     int elemsneeded = ceil((float) N/L);
 
-    for (unsigned int i = 0; i < pivotsLength; i++) {
+    for (unsigned int i = 0; i < pivotsLength - 1; i++) {
       int range = pivots[i + 1] - pivots[i];
-      int j = 0;
       while (buckets[i] >= elemsneeded) {
         pivots[i + 1] += (elemsneeded/buckets[i]) * range;
-        elemsneeded = N/L;
+        elemsneeded = ceil((float) N/L);
         buckets[i] -= elemsneeded;
-        j++;
       }
       elemsneeded -= buckets[i];
       pivots[i + 1] += range / 2;
     }
 
-    // /*****************************STEP 2 COMPLETE******************************/
 
-    // std::cout << "After" << std::endl;
-    // for (unsigned int i = 0; i < 20; i++) {
-    //   std::cout << pivots[i] << std::endl;
-    // }
+    /*****************************STEP 2 COMPLETE******************************/
 
-    // int count = 0;
-    // for (int i = 0; i < length; i++) {
-    //   if (in[i] >= pivots[8] && in[i] <= pivots[9]) {
-    //     count++;
-    //   }
-    // // }
-    // std::cout << "CPU Count: " << count << std::endl;
-    // std::cout << "GPU Count: " << buckets[9] << std:endl;
-    //
-    // /****************************STEP 3****************************************/
+    std::cout << "Done Refining Pivots\n";
+
+    /***************STEP 3: Counting After Refining Pivots*********************/
     //Launch a kernal to count the number of items in each bucket after
     //redefining pivots!
 
-    //Copying things to memory
+    //Copying data to GPU memory
     //Input/output mallocs
-    CHECK(cudaMalloc((void**)&d_pivots, pivotsLength * sizeof(unsigned int)));
-    CHECK(cudaMalloc((void**)&r_buckets, pivotsLength * sizeof(int)));
-    CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
     CHECK(cudaMalloc((void**)&r_indices, length * sizeof(unsigned int)));
     CHECK(cudaMalloc((void**)&r_sublist, length * sizeof(unsigned int)));
 
-    //Copying things to memory
+    //Copying data to GPU memory
     CHECK(cudaMemcpy(d_pivots, pivots,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_in, in,
-      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(r_buckets, buckets_count,
       pivotsLength * sizeof(int), cudaMemcpyHostToDevice));
 
@@ -211,25 +185,19 @@ float d_sort(unsigned int * in, unsigned int length) {
     d_count_kernel<<<grid, block>>>(d_pivots, r_buckets, pivotsLength,
       r_indices, r_sublist, d_in, length);
 
+    //Wait for the kernel to finish
     CHECK(cudaDeviceSynchronize());
 
+    //Copy the bucket counts back off of the GPU
     CHECK(cudaMemcpy(buckets, r_buckets, pivotsLength * sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(indices, r_indices, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(sublist, r_sublist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
+    //Free up unneeded space on the GPU
     CHECK(cudaFree(d_pivots));
     CHECK(cudaFree(r_buckets));
-    CHECK(cudaFree(r_indices));
-    CHECK(cudaFree(r_sublist));
-    CHECK(cudaFree(d_in));
 
-    // free(pivots);
+    /***************************STEP 3 COMPLETE********************************/
 
-    // /***************************STEP 3 COMPLETE********************************/
-
-    // for (int i = 0; i < length; i++) {
-    //   std::cout << "item: " << in[i] << " went into bucket " << sublist[i] << " which has pivot " << pivots[sublist[i]] << ". That bucket contains " << buckets[sublist[i]] << " items and this item is at index " << indices[i] << std::endl;
-    // }
+    std::cout << "Counting with Refined Pivots Complete\n";
 
     //Calculate prefix sums for buckets to find the starting index of each
     //bucket in our final bucketsorted array.
@@ -239,142 +207,96 @@ float d_sort(unsigned int * in, unsigned int length) {
       prefix_buckets[i] = prefix_buckets[i - 1] + buckets[i - 1];
     }
 
-    // for (unsigned int i = 0; i < 2048; i++) {
-    //   if (i % 10 == 0) {
-    //     std::cout << std::endl;
-    //   }
-    //   std::cout << std::setw(8) << buckets[i] << ", ";
-    // }
-    // std::cout << std::endl;
-    //
-    // for (unsigned int i = 0; i < 30; i++) {
-    //   if (i % 10 == 0) {
-    //     std::cout << std::endl;
-    //   }
-    //   std::cout << std::setw(8) << prefix_buckets[i] << ", ";
-    // }
-    // std::cout << std::endl;
-
     /***********************STEP 4: BUCKETSORT*********************************/
+    //Launch a kernel to move every element in the input array to its
+    //destination bucket.
 
-    CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
-    unsigned int * d_indices;
-    CHECK(cudaMalloc((void**)&d_indices, length * sizeof(unsigned int)));
-    unsigned int * d_sublist;
-    CHECK(cudaMalloc((void**)&d_sublist, length * sizeof(unsigned int)));
+    //Input/output mallocs
     unsigned int * r_outputlist;
     CHECK(cudaMalloc((void**)&r_outputlist, length * sizeof(unsigned int)));
     unsigned int * d_bucketoffsets;
     CHECK(cudaMalloc((void**)&d_bucketoffsets, pivotsLength * sizeof(unsigned int)));
 
-    CHECK(cudaMemcpy(d_in, in,
-      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_indices, indices, length * sizeof(unsigned int),
-            cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_sublist, sublist, length * sizeof(unsigned int),
-            cudaMemcpyHostToDevice));
+    //Copying data to GPU memory
     CHECK(cudaMemcpy(d_bucketoffsets, prefix_buckets,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
 
-    d_bucketsort<<<grid, block>>>(d_in, d_indices, d_sublist,
+    //Launching Kernel
+    d_bucketsort<<<grid, block>>>(d_in, r_indices, r_sublist,
       r_outputlist, d_bucketoffsets, length);
 
+    //Wait for the kernel to finish
     CHECK(cudaDeviceSynchronize());
 
+    //Copy the bucketsorted output data back off the GPU.
     unsigned int * outputlist = (unsigned int *) Malloc(length * sizeof(unsigned int));
     CHECK(cudaMemcpy(outputlist, r_outputlist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
+    //Free up unneeded GPU memory.
     CHECK(cudaFree(d_in));
-    CHECK(cudaFree(d_indices));
-    CHECK(cudaFree(d_sublist));
+    CHECK(cudaFree(r_indices));
+    CHECK(cudaFree(r_sublist));
     CHECK(cudaFree(r_outputlist));
     CHECK(cudaFree(d_bucketoffsets));
 
     /***********************STEP 4 COMPLETE************************************/
 
-    unsigned int lower = 0;
-    for (unsigned int i = 0; i < pivotsLength - 1; i++) {
-      unsigned int max = 0;
-      for (unsigned int j = lower; j < prefix_buckets[i]; j++) {
-        if (outputlist[j] > max) {
-          max = outputlist[j];
-        }
-      }
-      unsigned int min = UINT_MAX;
-      for (unsigned int j = prefix_buckets[i]; j < prefix_buckets[i + 1]; j++) {
-        if (outputlist[j] < min) {
-          min = outputlist[j];
-        }
-      }
-      // printf("MAX: %u, MIN: %u, %u < %u\n", max, min, max, min);
-      lower = prefix_buckets[i];
-    }
-
+    std::cout << "Done Bucketsorting\n";
 
     /*************************STEP 5: MERGESORT********************************/
+    //Mergesort the bucketsorted output from step 4.
 
+    //Input/output mallocs
     CHECK(cudaMalloc((void**)&d_in, length * sizeof(unsigned int)));
     CHECK(cudaMalloc((void**)&r_outputlist, length * sizeof(unsigned int)));
     CHECK(cudaMalloc((void**)&d_bucketoffsets, pivotsLength * sizeof(unsigned int)));
 
+    //Copying data to the GPU memory
     CHECK(cudaMemcpy(d_in, outputlist,
+      length * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(r_outputlist, outputlist,
       length * sizeof(unsigned int), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_bucketoffsets, prefix_buckets,
       pivotsLength * sizeof(unsigned int), cudaMemcpyHostToDevice));
 
-    d_sort_kernel<<<grid, block>>>(d_in, d_bucketoffsets, r_outputlist, length,
-      pivotsLength + 1);
 
+    //printf("%d\n", pivotsLength);
+
+    dim3 gridPivotsLength(ceil((float) pivotsLength/BLOCKDIM), 1, 1);
+
+    //Launch a kernel to sort the data.
+    d_sort_kernel<<<gridPivotsLength, block>>>(d_in, d_bucketoffsets, r_outputlist, length,
+      pivotsLength);
+
+    //Wait for the kernel to finish
     CHECK(cudaDeviceSynchronize());
 
+    //Copy results back from the GPU.
     CHECK(cudaMemcpy(outputlist, r_outputlist, length * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
+    //Free up the rest of our GPU memory.
     CHECK(cudaFree(d_in));
     CHECK(cudaFree(r_outputlist));
     CHECK(cudaFree(d_bucketoffsets));
+    //Free up any system memory we don't need anymore.
+    free(buckets);
+    delete[] pivots;
+    delete[] buckets_count;
+
 
     /*************************STEP 5 COMPLETE**********************************/
 
-    for (unsigned int i = 0; i < length; i++) {
-      std::cout << outputlist[i] << std::endl;
-    }
+    std::cout << "Finished Sorting\n";
 
+    /*Full output is now in outputlist.  You can print it with by uncommenting
+    * the following few lines!
+    */
+    // for (unsigned int i = 0; i < length; i++) {
+    //   std::cout << outputlist[i] << std::endl;
+    // }
+
+    //Free the output list once we're done.
     free(outputlist);
-    free(buckets);
-    free(indices);
-    free(sublist);
-    free(pivots);
-
-    // unsigned long size = 2 * NUMCHARS * sizeof(unsigned char);
-    // unsigned long outsize = pow(NUMCHARS, 2) * 3;
-
-    // unsigned char * d_passwords;
-    // CHECK(cudaMalloc((void**)&d_passwords, size));
-    // unsigned char * d_result;
-    // CHECK(cudaMalloc((void**)&d_result, outsize));
-
-
-    //Copy the starting passwords array and valid characters to the GPU
-    // CHECK(cudaMemcpyToSymbol(VALID_CHARS, VALID_CHARS_CPU, NUMCHARS * sizeof(char)));
-    // CHECK(cudaMemcpy(d_passwords, STARTING_PASSES, 2 * NUMCHARS, cudaMemcpyHostToDevice));
-
-
-    // Beginning of Four-way Radix Sort
-    // We need a block size of 256
-    // dim3 block(BLOCKDIM, 1, 1);
-    // dim3 grid(1, 1, 1);
-
-    // d_generate_kernel<<<grid, block>>>(d_passwords, 1, NUMCHARS, d_result);
-
-    // CHECK(cudaDeviceSynchronize());
-    //
-    // unsigned char * passwords = (unsigned char *) Malloc(outsize);
-    // CHECK(cudaMemcpy(passwords, d_result, outsize, cudaMemcpyDeviceToHost));
-    //
-    // CHECK(cudaFree(d_passwords));
-    // CHECK(cudaFree(d_result));
-    //
-    // free(passwords);
 
     //record the ending time and wait for event to complete
     CHECK(cudaEventRecord(stop_cpu));
@@ -384,6 +306,28 @@ float d_sort(unsigned int * in, unsigned int length) {
     return cpuMsecTime;
 }
 
+/*d_count_kernel
+*
+* A kernel to count the number of items in each bucket, find the destination
+* bucket for each item, find the index into the destination bucket for each
+* item.
+*
+* This is our interpretation of Sintorn and Assarsson's described algorithm and
+*   pseudocode.
+*
+* @params:
+*   d_pivots     - the input array of pivots
+*   r_buckets    - a place to return a list of bucket counts
+*   pivotsLength - the length of d_pivots and r_buckets
+*   r_indices    - a place to return the indices for each item into its
+*                   destination bucket
+*   r_sublist    - a place to return the bucket each item will map to.
+*   d_in         - the input data
+*   itemCount    - the length of r_indices, r_sublist, and d_in.
+*
+* @return:
+*   returns passed through pointers passed as input.
+*/
 __global__ void d_count_kernel(unsigned int * d_pivots,
   int * r_buckets, int pivotsLength, unsigned int * r_indices,
   unsigned int * r_sublist, unsigned int * d_in, int itemCount) {
@@ -401,10 +345,30 @@ __global__ void d_count_kernel(unsigned int * d_pivots,
       index = (element < pivot) ? index : index + 1;
       r_sublist[idx] = index;
       r_indices[idx] = atomicAdd(&r_buckets[index], 1);
-      // printf("idx: %d, element: %d, r_sublist[idx]: %d, r_indices[idx]: %d, pivot: %d\n", idx, element, r_sublist[idx], r_indices[idx], d_pivots[index]);
     }
 }
 
+/*d_bucketsort
+*
+* A kernel to bucketsort the input elements.  This will simply move elements to
+* their destination index.
+*
+* This is our interpretation of Sintorn and Assarsson's suggested bucketsort
+*   taken from their pseudocode and writing.
+*
+* @params:
+*   d_in            - the input data
+*   d_indices       - the input array of destination bucket indices for each item
+*   d_sublist       - the input array of destination buckets for each item
+*   r_outputlist    - the bucketsorted output
+*   d_bucketoffsets - an input array with a prefix sums array of the bucket
+*                     indices.  This will tell us where each individual bucket
+*                     starts.  Used for destination index calculation.
+*   itemCount       - the length of all input data.
+*
+* @return:
+*   returns passed through pointers passed as input.
+*/
 __global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
     unsigned int * d_sublist, unsigned int * r_outputlist,
     unsigned int * d_bucketoffsets, int itemCount) {
@@ -415,11 +379,24 @@ __global__ void d_bucketsort(unsigned int * d_in, unsigned int * d_indices,
       }
 }
 
+/*d_sequential_mergesort
+*
+* A kernel to execute a basic n^2 sort on a GPU core.
+*
+* @params:
+*   d_in        - the input data
+*   r_output    - space for the output array
+*   startIndex  - the index to start sorting at
+*   endIndex    - the index to stop sorting at
+*
+* @return:
+*   returns passed through pointers passed as input.
+*/
 __device__ void d_sequential_mergesort(unsigned int * d_in,
-  unsigned int * r_output, unsigned int startIndex, int endIndex) {
+  unsigned int * r_output, unsigned int startIndex, unsigned int endIndex) {
   for (unsigned int i = startIndex; i < endIndex; i++) {
-    unsigned min = UINT_MAX;
-    unsigned min_index = UINT_MAX;
+    unsigned int min = UINT_MAX;
+    unsigned int min_index = UINT_MAX;
     for (int j = startIndex; j < endIndex; j++) {
       if (d_in[j] < min) {
         min = d_in[j];
@@ -431,17 +408,88 @@ __device__ void d_sequential_mergesort(unsigned int * d_in,
   }
 }
 
+/*d_merge
+*
+* A traditional merge routine to be executed on the GPU as part of mergesort.
+*
+* NOT USED.  Originally we wanted to use a standard mergesort on the GPU,
+* and originally we thought it worked properly, but due to unpredictable thread
+* scheduling and possibly some memory access errors, we've had to disable this
+* code in the final demo.  That being said, if you wish to demo the running time
+* of a standard mergesort on the GPU, you can uncommend the call to d_mergesort
+* in d_sort_kernel and comment out the call to d_sequential_mergesort.  This
+* will not successfully sort the input data, but it will execute the same number
+* of operations that a working mergesort implementation would, thus its runtime
+* should be reflective of actual runtime.
+*
+* @params:
+*   data    - the input data
+*   working - working memory to complete the mergesort
+*   start   - the start index of the first half of the merge
+*   middle  - the middle index dividing the first and second halves of merge
+*   end     - the end index of the second half of the array to merge
+*
+* @return:
+*   sorting occurs in place!
+*/
+__device__ void d_merge(unsigned int * data, unsigned int * working,
+                        unsigned int start, unsigned int middle,
+                        unsigned int end) {
+  unsigned int lower = start;
+  unsigned int upper = middle;
+  for (unsigned int i = start; i <= end; i++) {
+    if (working[lower] < working[upper]) {
+      data[i] = working[lower];
+      lower++;
+    }
+    else {
+      data[i] = working[upper];
+      upper++;
+    }
+  }
+}
+
+/*d_mergesort
+*
+* A traditional mergesort routine to be executed on the GPU.
+*
+* NOT USED.  Originally we wanted to use a standard mergesort on the GPU,
+* and originally we thought it worked properly, but due to unpredictable thread
+* scheduling and possibly some memory access errors, we've had to disable this
+* code in the final demo.  That being said, if you wish to demo the running time
+* of a standard mergesort on the GPU, you can uncommend the call to d_mergesort
+* in d_sort_kernel and comment out the call to d_sequential_mergesort.  This
+* will not successfully sort the input data, but it will execute the same number
+* of operations that a working mergesort implementation would, thus its runtime
+* should be reflective of actual runtime.
+*
+* @params:
+*   input       - the input data
+*   working     - working memory to complete the mergesort
+*   startIndex  - the start index of the array to mergesort
+*   endIndex    - the end index of the array to mergesort
+*
+* @return:
+*   sorting occurs in place!
+*/
+__device__ void d_mergesort(unsigned int * input, unsigned int * working,
+                            unsigned int startIndex, unsigned int endIndex) {
+  if (startIndex < endIndex) {
+    unsigned int m = startIndex + ((endIndex - startIndex) / 2);
+    d_mergesort(input, working, startIndex, m);
+    d_mergesort(input, working, m + 1, endIndex);
+    d_merge(input, working, startIndex, m, endIndex);
+  }
+}
+
 /*d_sort_kernel
-*  Kernal code executed by each thread to generate a list of all possible
-*  passwords of length n + 1.  To do this, each thread will work on one element
-*  in passwords and append all characters in VALID_CHARS to it. This kernal
-*  works in place, so it will alter the input array.
+*  Our "driver" sorting kernel.  This allocates lists to different CUDA cores
+*   and launches a mergesort on each bucket.
 *
 *  @params:
 *   d_in - input array
 *   d_bucketoffsets - the offsets for the beginning of each bucket in d_in.
-*   r_outputlist - a place to store the output elements because mergesort isn't
-*       in place in this implementation.
+*   r_outputlist - working memory for the mergesort!
 *   itemCount - the length of d_in and r_outputlist
 *   bucketsCount - the length of d_bucketoffsets which is also the number of
 *       buckets for our data.
@@ -449,8 +497,17 @@ __device__ void d_sequential_mergesort(unsigned int * d_in,
 __global__ void d_sort_kernel(unsigned int * d_in,
   unsigned int * d_bucketoffsets, unsigned int * r_outputlist, int itemCount,
   int bucketsCount) {
-  unsigned long index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (index < bucketsCount - 1) {
+  unsigned int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (index < bucketsCount) {
     d_sequential_mergesort(d_in, r_outputlist, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
+
+    /*If you want to demo the traditional mergesort's performance, you can
+    * uncomment the following call to d_mergesort and comment out the
+    * d_sequential_mergesort call above.  This will not sort the data but it
+    * will do the same number of operations as a working mergesort would,
+    * so the performance is comparable.
+    */
+    // d_mergesort(r_outputlist, d_in, d_bucketoffsets[index], d_bucketoffsets[index + 1]);
   }
 }
