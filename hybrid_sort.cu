@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string>
 #include <math.h>
 #include <openssl/md5.h>
 #include "wrappers.h"
@@ -7,7 +8,7 @@
 #include "config.h"
 
 void parseCommandArgs(int argc, char * argv[], int * lower_bound,
-                      int * upper_bound);
+                      int * upper_bound, bool * quiet);
 void printUsage();
 
 /*main
@@ -25,8 +26,9 @@ void printUsage();
 */
 int main(int argc, char * argv[]) {
     int lower_bound = 0, upper_bound = 0;
+    bool quiet = false;
 
-    parseCommandArgs(argc, argv, &lower_bound, &upper_bound);
+    parseCommandArgs(argc, argv, &lower_bound, &upper_bound, &quiet);
 
     srand(1);
 
@@ -42,7 +44,7 @@ int main(int argc, char * argv[]) {
 
       float time = 0;
       for (unsigned int j = 0; j < 2; j++) {
-        time = d_sort(h_in_rand, num_elems);
+        time = d_sort(h_in_rand, num_elems, quiet);
       }
 
       printf("Hybrid GPU Sort took %f milliseconds to sort %e (2^%d) numbers.\n",
@@ -68,7 +70,7 @@ int main(int argc, char * argv[]) {
 *   upper_bound - a pointer to an upper_bound variable
 */
 void parseCommandArgs(int argc, char * argv[], int * lower_bound,
-                      int * upper_bound) {
+                      int * upper_bound, bool * quiet) {
     if (argc < 3) {
       printUsage();
       //exit because the input was incorrect
@@ -77,6 +79,9 @@ void parseCommandArgs(int argc, char * argv[], int * lower_bound,
     else {
       (*lower_bound) = atoi(argv[argc - 2]);
       (*upper_bound) = atoi(argv[argc - 1]);
+    }
+    if (std::string(argv[argc - 3]) == "-q") {
+      (*quiet) = true;
     }
 }
 

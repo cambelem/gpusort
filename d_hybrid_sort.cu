@@ -54,7 +54,7 @@ __device__ void d_merge(unsigned int * data, unsigned int * working,
 *   in     - the randomly generated input array
 *   length - the length of the input array
 */
-float d_sort(unsigned int * in, unsigned int length) {
+float d_sort(unsigned int * in, unsigned int length, bool quiet) {
 
     cudaEvent_t start_cpu, stop_cpu;
     float cpuMsecTime = -1;
@@ -137,7 +137,9 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /***************************STEP 1 COMPLETE********************************/
 
-    std::cout << "Counting with Original Pivots Complete\n";
+    if (!quiet) {
+      std::cout << "Counting with Original Pivots Complete\n";
+    }
 
     /*********************STEP 2: Refining Pivots******************************/
     //Refine our pivots using the algorithm suggested by Sintorn and Assarsson,
@@ -164,7 +166,9 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /*****************************STEP 2 COMPLETE******************************/
 
-    std::cout << "Done Refining Pivots\n";
+    if (!quiet) {
+      std::cout << "Done Refining Pivots\n";
+    }
 
     /***************STEP 3: Counting After Refining Pivots*********************/
     //Launch a kernal to count the number of items in each bucket after
@@ -197,7 +201,9 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /***************************STEP 3 COMPLETE********************************/
 
-    std::cout << "Counting with Refined Pivots Complete\n";
+    if (!quiet) {
+      std::cout << "Counting with Refined Pivots Complete\n";
+    }
 
     //Calculate prefix sums for buckets to find the starting index of each
     //bucket in our final bucketsorted array.
@@ -241,7 +247,9 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /***********************STEP 4 COMPLETE************************************/
 
-    std::cout << "Done Bucketsorting\n";
+    if (!quiet) {
+      std::cout << "Done Bucketsorting\n";
+    }
 
     /*************************STEP 5: MERGESORT********************************/
     //Mergesort the bucketsorted output from step 4.
@@ -286,7 +294,9 @@ float d_sort(unsigned int * in, unsigned int length) {
 
     /*************************STEP 5 COMPLETE**********************************/
 
-    std::cout << "Finished Sorting\n";
+    if (!quiet) {
+      std::cout << "Finished Sorting\n";
+    }
 
     /*Full output is now in outputlist.  You can print it with by uncommenting
     * the following few lines!
